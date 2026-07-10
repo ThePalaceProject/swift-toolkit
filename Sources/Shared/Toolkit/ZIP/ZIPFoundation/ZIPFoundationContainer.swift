@@ -105,11 +105,17 @@ private actor ZIPFoundationResource: Resource, Loggable {
     }
 
     func stream(range: Range<UInt64>?, consume: @escaping (Data) -> Void) async -> ReadResult<Void> {
-        if range != nil {}
-
-        return await archive().asyncFlatMap { archive in
+        await archive().asyncFlatMap { archive in
             do {
                 if let range = range {
+                    // The `Streamable` contract requires out-of-range indexes
+                    // to be clamped, while ZIPFoundation throws a
+                    // `rangeOutOfBounds` error.
+                    let length = entry.uncompressedSize
+                    let range = min(range.lowerBound, length) ..< min(range.upperBound, length)
+                    guard !range.isEmpty else {
+                        return .success(())
+                    }
                     try await archive.extractRange(range, of: entry) { data in
                         consume(data)
                     }
