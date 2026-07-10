@@ -225,7 +225,6 @@ public final class AudioNavigator: Navigator, Configurable, AudioSessionUser, Lo
                     await go(to: link)
                 }
             }
-            log(.info, "[#579] \(timestamp579()) play(): calling playImmediately(atRate: \(settings.speed)) with automaticallyWaitsToMinimizeStalling=\(player.automaticallyWaitsToMinimizeStalling)")
             player.playImmediately(atRate: Float(settings.speed))
         }
     }
@@ -297,9 +296,7 @@ public final class AudioNavigator: Navigator, Configurable, AudioSessionUser, Lo
             queue: .main
         ) { [weak self] time in
             if let self = self {
-                let time = time.secondsOrZero
-                self.log(.info, "[#579] \(timestamp579()) periodic tick: time=\(time), reportedState=\(self.state), rate=\(self.player.rate), bufferEmpty=\(self.player.currentItem?.isPlaybackBufferEmpty.description ?? "nil"), likelyToKeepUp=\(self.player.currentItem?.isPlaybackLikelyToKeepUp.description ?? "nil")")
-                self.playbackDidChange(time)
+                self.playbackDidChange(time.secondsOrZero)
             }
         }
 
@@ -319,8 +316,7 @@ public final class AudioNavigator: Navigator, Configurable, AudioSessionUser, Lo
             }
         }
 
-        timeControlStatusObserver = player.observe(\.timeControlStatus, options: [.new, .old]) { [weak self] player, _ in
-            self?.log(.info, "[#579] \(timestamp579()) timeControlStatus changed to \(player.timeControlStatus.debugLabel) (rate=\(player.rate), reasonForWaitingToPlay=\(player.reasonForWaitingToPlay?.rawValue ?? "nil"), bufferEmpty=\(player.currentItem?.isPlaybackBufferEmpty.description ?? "nil"), likelyToKeepUp=\(player.currentItem?.isPlaybackLikelyToKeepUp.description ?? "nil"))")
+        timeControlStatusObserver = player.observe(\.timeControlStatus, options: [.new, .old]) { [weak self] _, _ in
             self?.playbackDidChange()
         }
 
@@ -574,18 +570,6 @@ public final class AudioNavigator: Navigator, Configurable, AudioSessionUser, Lo
             initialPreferences: preferences,
             defaults: config.defaults
         )
-    }
-}
-
-extension AVPlayer.TimeControlStatus {
-    /// Debug helper for the [#579] diagnostic log events.
-    var debugLabel: String {
-        switch self {
-        case .paused: return "paused"
-        case .waitingToPlayAtSpecifiedRate: return "waitingToPlayAtSpecifiedRate"
-        case .playing: return "playing"
-        @unknown default: return "unknown(\(rawValue))"
-        }
     }
 }
 

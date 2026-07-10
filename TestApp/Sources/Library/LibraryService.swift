@@ -111,9 +111,9 @@ final class LibraryService: Loggable {
         }
 
         var url = url
-//        if let file = url.fileURL {
-//            url = try await fulfillIfNeeded(file, progress: progress)
-//        }
+        if let file = url.fileURL {
+            url = try await fulfillIfNeeded(file, progress: progress)
+        }
 
         let (pub, format) = try await openPublication(at: url, allowUserInteraction: false, sender: sender)
         let title = pub.metadata.title ?? url.url.deletingPathExtension().lastPathComponent
