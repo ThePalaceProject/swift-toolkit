@@ -10,8 +10,15 @@ import ReadiumShared
 
 private let lcpScheme = "http://readium.org/2014/01/lcp"
 
+/// Timestamp helper to correlate the [#579] diagnostic log events.
+func timestamp579lcp() -> String {
+    String(format: "t=%.3fs", CFAbsoluteTimeGetCurrent() - loadingStartTime579)
+}
+
+private let loadingStartTime579 = CFAbsoluteTimeGetCurrent()
+
 /// Decrypts a resource protected with LCP.
-final class LCPDecryptor {
+final class LCPDecryptor: Loggable {
     enum Error: Swift.Error {
         case emptyDecryptedData
         case invalidCBCData
@@ -44,9 +51,11 @@ final class LCPDecryptor {
         }
 
         if encryption.isDeflated || !encryption.isCbcEncrypted {
+            log(.info, "[#579] LCPDecryptor: using FullLCPResource for \(href) (isDeflated=\(encryption.isDeflated), isCbcEncrypted=\(encryption.isCbcEncrypted)) — the WHOLE resource will be read and decrypted on first access")
             return FullLCPResource(resource, license: license, encryption: encryption).cached()
 
         } else {
+            log(.info, "[#579] LCPDecryptor: using CBCLCPResource for \(href) (random access supported)")
             // We use a buffered resource because when requesting a range from
             // an LCP resource, we always read a bit more to align the data with
             // the next AES block. This means that consecutive requests are not
@@ -62,7 +71,7 @@ final class LCPDecryptor {
     ///
     /// Can be used when it's impossible to map a read range (byte range request) to the encrypted
     /// resource, for example when the resource is deflated before encryption.
-    private class FullLCPResource: TransformingResource {
+    private class FullLCPResource: TransformingResource, Loggable {
         private let license: LCPLicense
         private let encryption: ReadiumShared.Encryption
 
@@ -73,7 +82,8 @@ final class LCPDecryptor {
         }
 
         override func transform(data: ReadResult<Data>) async -> ReadResult<Data> {
-            await license.decryptFully(data: data, isDeflated: encryption.isDeflated)
+            log(.info, "[#579] \(timestamp579lcp()) FullLCPResource: decrypting the WHOLE resource (\((try? data.get().count) ?? -1) bytes) in one shot")
+            return await license.decryptFully(data: data, isDeflated: encryption.isDeflated)
         }
 
         override func estimatedLength() async -> ReadResult<UInt64?> {
@@ -84,7 +94,7 @@ final class LCPDecryptor {
     /// A LCP resource used to read content encrypted with the CBC algorithm.
     ///
     /// Supports random access for byte range requests, but the resource MUST NOT be deflated.
-    private class CBCLCPResource: Resource {
+    private class CBCLCPResource: Resource, Loggable {
         private let resource: Resource
         private let license: LCPLicense
         private let encryption: ReadiumShared.Encryption
@@ -142,9 +152,14 @@ final class LCPDecryptor {
         }
 
         func stream(range: Range<UInt64>?, consume: @escaping (Data) -> Void) async -> ReadResult<Void> {
+            log(.info, "[#579] \(timestamp579lcp()) CBCLCPResource.stream(range: \(range.map(String.init(describing:)) ?? "nil"))")
+
             guard let range = range else {
+                log(.info, "[#579] \(timestamp579lcp()) CBCLCPResource: reading the FULL encrypted resource in memory before decrypting…")
+                let readStart = CFAbsoluteTimeGetCurrent()
                 return await license.decryptFully(data: resource.read(), isDeflated: encryption.isDeflated)
                     .map {
+                        log(.info, "[#579] \(timestamp579lcp()) CBCLCPResource: full read+decrypt done in \(String(format: "%.3fs", CFAbsoluteTimeGetCurrent() - readStart)), delivering \($0.count) bytes in a SINGLE consume call")
                         consume($0)
                         return ()
                     }
@@ -166,9 +181,13 @@ final class LCPDecryptor {
                     encryptedLength
                 )
 
+                log(.info, "[#579] \(timestamp579lcp()) CBCLCPResource: buffering the WHOLE encrypted range \(encryptedStart ..< encryptedEndExclusive) (\(encryptedEndExclusive - encryptedStart) bytes) before decrypting…")
+                let readStart = CFAbsoluteTimeGetCurrent()
+
                 return await resource.read(range: encryptedStart ..< encryptedEndExclusive)
                     .combine(plainTextSize)
-                    .flatMap { encryptedData, plainTextSize in
+                    .flatMap { [self] encryptedData, plainTextSize in
+                        log(.info, "[#579] \(timestamp579lcp()) CBCLCPResource: range read done in \(String(format: "%.3fs", CFAbsoluteTimeGetCurrent() - readStart)), got \(encryptedData.count) bytes, decrypting in one shot")
                         do {
                             guard let plainTextSize = plainTextSize else {
                                 return failure(.noPlainTextSize)
@@ -191,6 +210,7 @@ final class LCPDecryptor {
                             // include padding.
                             let sliceEnd = sliceStart + rangeLength
 
+                            log(.info, "[#579] \(timestamp579lcp()) CBCLCPResource: delivering \(sliceEnd - sliceStart) decrypted bytes in a SINGLE consume call")
                             consume(bytes[sliceStart ..< sliceEnd])
                             return .success(())
                         } catch {
