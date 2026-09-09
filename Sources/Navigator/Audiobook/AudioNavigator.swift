@@ -396,10 +396,15 @@ public final class AudioNavigator: Navigator, Configurable, AudioSessionUser, Lo
             }
 
             let itemError = item.error
-            log(.error, "Failed to load the player item: \(String(describing: itemError))")
 
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
+                // Logged inside the hop: `log` resolves to a member here, and the KVO
+                // closure captures `self` weakly, so calling it outside requires an
+                // unwrap in a nonisolated context. The fork could call it directly
+                // because it unwrapped `self` in the outer guard; under 4.0's
+                // @MainActor isolation the hop is the right place for it.
+                log(.error, "Failed to load the player item: \(String(describing: itemError))")
                 guard let href = self.publication.readingOrder[self.resourceIndex].url().relativeURL else {
                     return
                 }
