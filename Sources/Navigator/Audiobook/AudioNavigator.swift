@@ -156,7 +156,18 @@ public final class AudioNavigator: Navigator, Configurable, AudioSessionUser, Lo
 
     /// Returns whether the resource is currently playing or not.
     public var state: MediaPlaybackState {
-        MediaPlaybackState(player.timeControlStatus)
+        let state = MediaPlaybackState(player.timeControlStatus)
+        if
+            state == .playing,
+            let item = player.currentItem,
+            item.isPlaybackBufferEmpty, !item.isPlaybackLikelyToKeepUp
+        {
+            // As `automaticallyWaitsToMinimizeStalling` is disabled, the
+            // player reports `.playing` even when it is stalled on an empty
+            // buffer waiting for data.
+            return .loading
+        }
+        return state
     }
 
     /// Current playback info.
@@ -263,8 +274,25 @@ public final class AudioNavigator: Navigator, Configurable, AudioSessionUser, Lo
     private var currentItemObserver: NSKeyValueObservation?
     private var timeObserverToken: TimeObserverToken?
     private var notificationTask: Task<Void, Never>?
+    /// #579: observe the CURRENT item's status and buffering so the navigator can
+    /// report honest playback state and surface load failures. 4.0 supersedes the
+    /// fork's own `timeObserver`/`playerItemEndObserver` with `timeObserverToken`
+    /// and `notificationTask`, so only these two carry forward.
+    private var itemStatusObserver: NSKeyValueObservation?
+    private var itemLikelyToKeepUpObserver: NSKeyValueObservation?
 
-    private lazy var mediaLoader = PublicationMediaLoader(publication: publication)
+    private lazy var mediaLoader: PublicationMediaLoader = {
+        let loader = PublicationMediaLoader(publication: publication)
+        loader.onLoadingError = { [weak self] href, error in
+            Task { @MainActor in
+                guard let self = self, let href = href.relativeURL else {
+                    return
+                }
+                self.delegate?.navigator(self, didFailToLoadResourceAt: href, withError: error)
+            }
+        }
+        return loader
+    }()
 
     private lazy var player: AVPlayer = makePlayer()
 
@@ -312,8 +340,13 @@ public final class AudioNavigator: Navigator, Configurable, AudioSessionUser, Lo
             }
         }
 
-        currentItemObserver = player.observe(\.currentItem, options: [.new, .old]) { [weak self] _, _ in
+        currentItemObserver = player.observe(\.currentItem, options: [.new, .old]) { [weak self] player, _ in
+            // #579: re-point the item observers at the NEW item. Hopped to the main
+            // actor because 4.0 isolates this class, where the fork called both
+            // directly from the KVO callback.
+            let item = player.currentItem
             Task { @MainActor [weak self] in
+                self?.observe(currentItem: item)
                 self?.playbackDidChange()
             }
         }
@@ -337,6 +370,44 @@ public final class AudioNavigator: Navigator, Configurable, AudioSessionUser, Lo
         }
 
         return player
+    }
+
+    /// #579: watch the CURRENT player item so the navigator reports honest playback
+    /// state and surfaces load failures.
+    ///
+    /// Without this, `playbackDidChange` reports `.playing` the moment `play()` is
+    /// called while `info.time` never advances, and a failed item is silent — the
+    /// symptom in readium/swift-toolkit#579.
+    ///
+    /// Ported to 4.0's isolation: this class is `@MainActor` there, and KVO callbacks
+    /// arrive on an arbitrary thread, so both handlers hop before touching `self`.
+    /// The fork read `publication`/`resourceIndex` synchronously inside the callback,
+    /// which is not sound under 4.0; that read moves inside the hop.
+    private func observe(currentItem item: AVPlayerItem?) {
+        itemLikelyToKeepUpObserver = item?.observe(\.isPlaybackLikelyToKeepUp) { [weak self] _, _ in
+            Task { @MainActor [weak self] in
+                self?.playbackDidChange()
+            }
+        }
+
+        itemStatusObserver = item?.observe(\.status) { [weak self] item, _ in
+            guard item.status == .failed else {
+                return
+            }
+
+            let itemError = item.error
+            log(.error, "Failed to load the player item: \(String(describing: itemError))")
+
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                guard let href = self.publication.readingOrder[self.resourceIndex].url().relativeURL else {
+                    return
+                }
+                let error: ReadError = itemError.flatMap { .wrap($0) }
+                    ?? .decoding("The AVPlayerItem failed to load", cause: itemError)
+                self.delegate?.navigator(self, didFailToLoadResourceAt: href, withError: error)
+            }
+        }
     }
 
     private func shouldPlayNextResource() -> Bool {

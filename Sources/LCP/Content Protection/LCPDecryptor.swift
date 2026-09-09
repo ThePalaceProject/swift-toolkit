@@ -120,8 +120,37 @@ final class LCPDecryptor: Sendable {
             await plainTextSize()
         }
 
+        /// Number of plaintext bytes decrypted and delivered per `consume` call when
+        /// streaming (readium/swift-toolkit#579).
+        private static let chunkSize: UInt64 = 256 * 1024
+
+        /// Decrypts in CHUNKS so the caller can start consuming the beginning of a
+        /// resource without waiting for the whole range.
+        ///
+        /// Before this, a nil range decrypted the entire resource and delivered it in a
+        /// single `consume`. For an LCP audiobook served over HTTP that means AVPlayer
+        /// receives nothing until the last byte is decrypted, which is #579: playback
+        /// reports `playing` while `info.time` never advances. Palace shipped this fix
+        /// in 3.2.4 and it is what makes LCP streaming work at all.
         @concurrent func stream(range: Range<UInt64>?, consume: @escaping @Sendable (Data) -> Void) async -> ReadResult<Void> {
-            guard let range = range else {
+            var size: UInt64?
+            switch await plainTextSize() {
+            case let .success(value):
+                size = value
+            case let .failure(error):
+                // A ranged read cannot proceed without the size; a full read can still
+                // fall back to decrypting the resource whole.
+                guard range == nil else {
+                    return .failure(error)
+                }
+            }
+
+            guard let plainTextSize = size else {
+                guard range == nil else {
+                    return .failure(.decoding(LCPDecryptor.Error.noPlainTextSize))
+                }
+                // Without a plaintext size the chunk boundaries cannot be computed, so
+                // fall back to 4.0's whole-resource path rather than guessing.
                 return await license.decryptFully(data: resource.read(), isDeflated: encryption.isDeflated)
                     .map {
                         consume($0)
@@ -129,7 +158,31 @@ final class LCPDecryptor: Sendable {
                     }
             }
 
-            return await resource.estimatedLength().asyncFlatMap { encryptedLength in
+            let requested = range ?? 0 ..< plainTextSize
+            let clamped = min(requested.lowerBound, plainTextSize) ..< min(requested.upperBound, plainTextSize)
+            guard !clamped.isEmpty else {
+                return .success(())
+            }
+
+            var offset = clamped.lowerBound
+            while offset < clamped.upperBound {
+                guard !Task.isCancelled else {
+                    return .failure(.cancelled)
+                }
+                let end = min(offset + Self.chunkSize, clamped.upperBound)
+                let result = await decrypt(range: offset ..< end, consume: consume)
+                if case .failure = result {
+                    return result
+                }
+                offset = end
+            }
+            return .success(())
+        }
+
+        /// One chunk. This body is 4.0's ranged-decryption arithmetic, unchanged —
+        /// only lifted out of `stream` so the loop above can drive it repeatedly.
+        private func decrypt(range: Range<UInt64>, consume: @escaping @Sendable (Data) -> Void) async -> ReadResult<Void> {
+            await resource.estimatedLength().asyncFlatMap { encryptedLength in
                 guard let encryptedLength = encryptedLength else {
                     return .failure(.decoding(LCPDecryptor.Error.requiredEstimatedLength))
                 }

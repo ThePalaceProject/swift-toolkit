@@ -43,6 +43,8 @@ public enum ReadError: Error, Sendable {
     /// Returns `nil` if the error cannot be mapped to a known `ReadError`.
     public static func wrap(_ error: Error) -> ReadError? {
         switch error {
+        case let error as ReadError:
+            return error
         case is CancellationError:
             return .cancelled
         case let error as CocoaError:
@@ -126,6 +128,29 @@ public enum ReadError: Error, Sendable {
             .access(.fileSystem(.io(error)))
         default:
             nil
+        }
+    }
+}
+
+public extension ReadError {
+    /// Indicates whether the error is caused by a cancelled task or HTTP
+    /// request, instead of a genuine failure.
+    ///
+    /// Not made redundant by 4.0's `ReadError.wrap(_:)`. `wrap` normalises at the
+    /// BOUNDARY, turning a `CancellationError` or a cancelled `HTTPError` into
+    /// `.cancelled` as the error is constructed. This is a PREDICATE over an error
+    /// that already exists, and it additionally unwraps `.decoding(...)` — which is
+    /// how a cancellation reaches `PublicationMediaLoader` in practice. The two are
+    /// complementary.
+    var isCancellation: Bool {
+        switch self {
+        case .cancelled, .access(.http(.cancelled)):
+            return true
+        case let .decoding(error):
+            return (error as? ReadError)?.isCancellation
+                ?? (error is CancellationError)
+        default:
+            return false
         }
     }
 }
