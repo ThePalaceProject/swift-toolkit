@@ -61,7 +61,7 @@ class HTTPResourceTests: XCTestCase {
 
     /// A resume answered with the whole resource instead of the requested
     /// range is rejected, so earlier bytes are never delivered twice.
-    func testReadFailsWhenResumeIgnoresRange() async throws {
+    func testReadFailsWhenResumeIgnoresRange() async {
         let client = ScriptedHTTPClient(url: url, replies: [
             .init(status: .partialContent, headers: ["Content-Length": "1000"], body: content[0 ..< 600]),
             .init(status: .ok, headers: ["Content-Length": "1000"], body: content),
@@ -77,7 +77,7 @@ class HTTPResourceTests: XCTestCase {
 
     /// Only a 206 response carries the requested range, even when another
     /// response happens to have the expected length.
-    func testReadFailsWhenResumeIsNotAPartialResponse() async throws {
+    func testReadFailsWhenResumeIsNotAPartialResponse() async {
         let client = ScriptedHTTPClient(url: url, replies: [
             .init(status: .partialContent, headers: ["Content-Length": "1000"], body: content[0 ..< 600]),
             .init(status: .ok, headers: ["Content-Length": "400"], body: content[0 ..< 400]),
@@ -90,7 +90,7 @@ class HTTPResourceTests: XCTestCase {
     }
 
     /// A read cancelled while its body was arriving is not resumed.
-    func testReadIsNotResumedAfterCancellation() async throws {
+    func testReadIsNotResumedAfterCancellation() async {
         let client = ScriptedHTTPClient(url: url, replies: [
             .init(status: .partialContent, headers: ["Content-Length": "1000"], body: content[0 ..< 600], cancelsReader: true),
             .init(status: .partialContent, headers: ["Content-Length": "400"], body: content[600 ..< 1000]),
