@@ -94,6 +94,7 @@ private func canAllocate(_ length: Int) -> Bool {
 
 enum ResourceDataSourceError: Error {
     case unknownContentLength
+    case shortRead(expected: Int, received: Int)
 }
 
 /// Bridges the ZIPFoundation's ``DataSource`` with our ``Resource``.
@@ -141,6 +142,15 @@ private actor ResourceDataSource: ReadiumZIPFoundation.DataSource {
             }
             let range = _position ..< (_position + UInt64(length))
             let data = try await resource.read(range: range).get()
+
+            // ZIPFoundation counts a read as `length` bytes whatever it
+            // returned, so a short read would silently drop bytes from an
+            // entry. It never reads past the end of a well-formed archive, and
+            // entry ranges are clamped before they get here.
+            guard data.count == length else {
+                throw ResourceDataSourceError.shortRead(expected: length, received: data.count)
+            }
+
             _position += UInt64(data.count)
             return data
         }

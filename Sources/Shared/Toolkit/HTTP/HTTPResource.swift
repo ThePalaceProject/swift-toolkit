@@ -64,22 +64,89 @@ public actor HTTPResource: Resource {
     }
 
     public func stream(range: Range<UInt64>?, consume: @escaping (Data) -> Void) async -> ReadResult<Void> {
-        let request = {
-            var request = HTTPRequest(url: url)
-            if let range = range {
-                request.setRange(range)
-            }
-            return request
-        }()
+        var request = HTTPRequest(url: url)
+        if let range = range {
+            request.setRange(range)
+        }
 
-        return await client.stream(
+        var received: UInt64 = 0
+        let result = await client.stream(
             request: request,
             consume: { data, _ in
+                received += UInt64(data.count)
                 consume(data)
                 return .success(())
             }
         )
-        .map { _ in () }
-        .mapError { .access(.http($0)) }
+
+        switch result {
+        case let .failure(error):
+            return .failure(.access(.http(error)))
+
+        case let .success(response):
+            // A connection can end before the body is complete without the
+            // transport reporting an error. The missing bytes are requested
+            // once more before the read fails.
+            guard let expected = response.expectedBodyLength, received < expected else {
+                return .success(())
+            }
+            let start = (range?.lowerBound ?? 0) + received
+            let end = (range?.lowerBound ?? 0) + expected
+            return await resume(start ..< end, consume: consume)
+        }
+    }
+
+    /// Reads the remaining `range` of an interrupted body, delivering it only
+    /// if the server returned exactly that range.
+    private func resume(_ range: Range<UInt64>, consume: @escaping (Data) -> Void) async -> ReadResult<Void> {
+        guard !Task.isCancelled else {
+            return .failure(.cancelled)
+        }
+
+        var request = HTTPRequest(url: url)
+        request.setRange(range)
+
+        var data = Data()
+        let result = await client.stream(
+            request: request,
+            consume: { chunk, _ in
+                data.append(chunk)
+                return .success(())
+            }
+        )
+
+        switch result {
+        case let .failure(error):
+            return .failure(.access(.http(error)))
+
+        case let .success(response):
+            guard response.status == .partialContent, UInt64(data.count) == UInt64(range.count) else {
+                let error = HTTPTruncatedResponseError(expected: UInt64(range.count), received: UInt64(data.count))
+                return .failure(.access(.http(.malformedResponse(error))))
+            }
+            consume(data)
+            return .success(())
+        }
+    }
+}
+
+/// The server ended a response body before delivering the bytes it announced.
+public struct HTTPTruncatedResponseError: Error {
+    /// Number of bytes announced by the response.
+    public let expected: UInt64
+    /// Number of bytes actually received.
+    public let received: UInt64
+}
+
+private extension HTTPResponse {
+    /// Length of the body the client will receive, when it can be known.
+    ///
+    /// URLSession decodes compressed bodies, whose Content-Length counts the
+    /// encoded bytes, so their decoded length cannot be checked against it.
+    var expectedBodyLength: UInt64? {
+        if let encoding = valueForHeader("Content-Encoding"), encoding.lowercased() != "identity" {
+            return nil
+        }
+        return contentLength.map { UInt64($0) }
     }
 }
