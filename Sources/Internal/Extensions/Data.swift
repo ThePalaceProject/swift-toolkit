@@ -21,4 +21,13 @@ public extension Data {
         assert(indices.contains(upper - 1))
         return self[lower ..< upper]
     }
+
+    /// Returns the bytes at `range`, counted from the first byte of `self`
+    /// whatever its `startIndex`, or nil if `range` extends past the end.
+    func bytes(in range: Range<Int>) -> Data? {
+        guard range.lowerBound >= 0, range.upperBound <= count else {
+            return nil
+        }
+        return self[(startIndex + range.lowerBound) ..< (startIndex + range.upperBound)]
+    }
 }

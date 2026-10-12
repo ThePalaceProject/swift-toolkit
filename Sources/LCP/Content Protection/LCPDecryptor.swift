@@ -19,6 +19,7 @@ final class LCPDecryptor: Loggable {
         case inflateFailed
         case requiredEstimatedLength
         case noPlainTextSize
+        case truncatedCipherText
     }
 
     private let license: LCPLicense?
@@ -248,7 +249,12 @@ final class LCPDecryptor: Loggable {
                         // include padding.
                         let sliceEnd = sliceStart + rangeLength
 
-                        return .success(bytes[sliceStart ..< sliceEnd])
+                        // A source that delivered fewer encrypted bytes than
+                        // requested yields fewer plaintext bytes than the slice.
+                        guard let slice = bytes.bytes(in: Int(sliceStart) ..< Int(sliceEnd)) else {
+                            return failure(.truncatedCipherText)
+                        }
+                        return .success(slice)
                     } catch {
                         return .failure(.decoding(error))
                     }
