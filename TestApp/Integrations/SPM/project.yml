@@ -3,7 +3,11 @@ options:
   bundleIdPrefix: org.readium
 packages:
   Readium:
-    url: https://github.com/readium/swift-toolkit.git
+    # This fork, not readium/swift-toolkit: the Integration (Swift Package
+    # Manager) check resolves the commit under test, and SwiftPM only resolves
+    # refs of the repository named here. Keep it on the fork when merging
+    # upstream changes into this file.
+    url: https://github.com/ThePalaceProject/swift-toolkit.git
     VERSION
   GRDB:
     url: https://github.com/groue/GRDB.swift.git
