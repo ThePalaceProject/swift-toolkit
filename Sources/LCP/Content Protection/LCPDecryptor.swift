@@ -85,17 +85,28 @@ final class LCPDecryptor: Loggable {
     /// A LCP resource used to read content encrypted with the CBC algorithm.
     ///
     /// Supports random access for byte range requests, but the resource MUST NOT be deflated.
-    private class CBCLCPResource: Resource, Loggable {
+    private class CBCLCPResource: KnownLengthAcceptingResource, Loggable {
         private let resource: Resource
         private let license: LCPLicense
         private let encryption: ReadiumShared.Encryption
+        private let knownPlainTextSize: UInt64?
 
-        init(_ resource: Resource, license: LCPLicense, encryption: ReadiumShared.Encryption) {
+        init(
+            _ resource: Resource,
+            license: LCPLicense,
+            encryption: ReadiumShared.Encryption,
+            knownPlainTextSize: UInt64? = nil
+        ) {
             assert(!encryption.isDeflated)
             assert(encryption.isCbcEncrypted)
             self.resource = resource
             self.license = license
             self.encryption = encryption
+            self.knownPlainTextSize = knownPlainTextSize
+        }
+
+        func withKnownLength(_ length: UInt64) -> Resource {
+            CBCLCPResource(resource, license: license, encryption: encryption, knownPlainTextSize: length)
         }
 
         let sourceURL: AbsoluteURL? = nil
@@ -112,8 +123,13 @@ final class LCPDecryptor: Loggable {
             get async { await plainTextSizeTask.value }
         }
 
-        private lazy var plainTextSizeTask = Task<ReadResult<UInt64?>, Never> {
-            await resource.estimatedLength().asyncFlatMap { length in
+        private lazy var plainTextSizeTask = Task<ReadResult<UInt64?>, Never> { [knownPlainTextSize] in
+            // Computing the size reads the last two encrypted blocks, which in a
+            // remote publication can cost far more than the bytes requested.
+            if let knownPlainTextSize {
+                return .success(knownPlainTextSize)
+            }
+            return await resource.estimatedLength().asyncFlatMap { length in
                 guard let length = length else {
                     return failure(.requiredEstimatedLength)
                 }

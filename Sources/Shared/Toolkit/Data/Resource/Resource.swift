@@ -28,3 +28,17 @@ public protocol Resource: Streamable {
     /// This is opened for extensions.
     func properties() async -> ReadResult<ResourceProperties>
 }
+
+/// A ``Resource`` that can be given its decoded length instead of computing it.
+///
+/// Computing the length can be expensive. An LCP resource encrypted with
+/// AES-CBC reads its last encrypted blocks to learn the padding size, and in a
+/// remote publication those blocks sit far from the bytes being read.
+public protocol KnownLengthAcceptingResource: Resource {
+    /// Returns a resource serving the same content that reports and uses
+    /// `length` as its decoded length.
+    ///
+    /// `length` must be exact. A larger value exposes padding bytes at the end
+    /// of the content, and a smaller one truncates it.
+    func withKnownLength(_ length: UInt64) -> Resource
+}
