@@ -141,6 +141,17 @@ let package = Package(
                 .process("Resources"),
             ]
         ),
+        // Exercises the decryptor with a test license, so unlike
+        // ReadiumLCPTests it does not need R2LCPClient.framework.
+        .testTarget(
+            name: "ReadiumLCPDecryptorTests",
+            dependencies: [
+                "ReadiumLCP",
+                "ReadiumShared",
+            ],
+            path: "Tests/LCPDecryptorTests"
+        ),
+
         // These tests require a R2LCPClient.framework to run.
         // TODO: Find a solution to run the tests with GitHub action.
         // .testTarget(
